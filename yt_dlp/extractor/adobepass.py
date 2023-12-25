@@ -61,6 +61,11 @@ MSO_INFO = {
         'username_field': 'IDToken1',
         'password_field': 'IDToken2',
     },
+    'Dish': {
+        'name': 'DISH',
+        'username_field': 'username',
+        'password_field': 'password',
+    },
     'Spectrum': {
         'name': 'Spectrum',
         'username_field': 'IDToken1',
@@ -1401,6 +1406,24 @@ class AdobePassIE(InfoExtractor):  # XXX: Conventionally, base classes should en
                 post_url, video_id, note, data=urlencode_postdata(form_data), headers={
                     'Content-Type': 'application/x-www-form-urlencoded',
                 })
+        
+        def process_redirects(page_res, video_id, note, lastbookend=False):
+            page, urlh = page_res
+            while 'Redirecting...' in page:
+                redirect_url = extract_redirect_url(page)
+                if redirect_url:
+                    page_res = self._download_webpage_handle(
+                        redirect_url, video_id, note)
+                else:
+                    form_data = self._hidden_inputs(page)
+                    url = urlh.geturl()
+                    if lastbookend:
+                        url.replace('firstbookend', 'lastbookend')
+                    page_res = self._download_webpage_handle(
+                        url, video_id, note,
+                        query=form_data)
+                page, urlh = page_res
+            return page_res
 
         def raise_mvpd_required():
             raise ExtractorError(
@@ -1694,6 +1717,42 @@ class AdobePassIE(InfoExtractor):  # XXX: Conventionally, base classes should en
                         query=hidden_data)
 
                     post_form(mvpd_confirm_page_res, 'Confirming Login')
+                    
+                elif mso_id == 'Dish':
+                    provider_redirect_page, urlh = provider_redirect_page_res
+                    provider_refresh_redirect_url = extract_redirect_url(
+                        provider_redirect_page, url=urlh.geturl())
+                    if provider_refresh_redirect_url:
+                        provider_redirect_page_res = self._download_webpage_handle(
+                            provider_refresh_redirect_url, video_id,
+                            'Downloading Provider Redirect Page (meta refresh)')
+                    provider_redirect_page, urlh = provider_redirect_page_res
+                    if '<body onload="document.forms[0].submit()">' in provider_redirect_page:
+                        provider_redirect_page_res = post_form(
+                            provider_redirect_page_res, 'Downloading login page (redirect)')
+                    provider_redirect_page_res = process_redirects(
+                        provider_redirect_page_res, video_id, 'Downloading login page (redirect)', True)
+                    provider_redirect_page, urlh = provider_redirect_page_res
+                    provider_redirect_page_res = self._download_webpage_handle(
+                        urlh.geturl(), video_id, self._DOWNLOADING_LOGIN_PAGE)
+                    mvpd_confirm_page_res = post_form(provider_redirect_page_res, 'Attempting social login', {
+                        mso_info.get('username_field', 'username'): username,
+                        mso_info.get('password_field', 'password'): password,
+                        'login_type': 'username,password',
+                        'source': 'identity1.dishnetwork.com',
+                        'source_button': 'identity1.dishnetwork.com',
+                        'remember_me': 'no'
+                    })
+                    mvpd_confirm_page, urlh = mvpd_confirm_page_res
+                    finish_url = urlh.geturl()
+                    finish_url = finish_url.replace('/login','/DiscoveryAssociationsResume')
+                    mvpd_confirm_page_res = self._download_webpage_handle(
+                        finish_url, video_id, 'Completing social login')
+                    mvpd_confirm_page, urlh = mvpd_confirm_page_res
+                    mvpd_confirm_page_res = process_redirects(
+                        mvpd_confirm_page_res, video_id, 'Confirming Login', True)
+                    post_form(mvpd_confirm_page_res, 'Confirming Login')
+                    
                 else:
                     # Some providers (e.g. DIRECTV NOW) have another meta refresh
                     # based redirect that should be followed.
